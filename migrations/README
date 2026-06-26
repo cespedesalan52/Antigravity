@@ -1,0 +1,36 @@
+Migraciones de base de datos (Alembic)
+======================================
+
+La URL de conexión se toma automáticamente de la configuración del proyecto
+(app/core/config.py -> .env, variable DATABASE_URL). No hace falta editarla
+en alembic.ini.
+
+Comandos habituales
+-------------------
+
+- Aplicar todas las migraciones (crea/actualiza el esquema):
+    alembic upgrade head
+
+- Crear una nueva migración tras cambiar los modelos:
+    alembic revision --autogenerate -m "descripcion del cambio"
+    (revisá el archivo generado en migrations/versions/ antes de aplicarlo)
+
+- Revertir la última migración:
+    alembic downgrade -1
+
+Adoptar Alembic en una base que YA tiene las tablas
+---------------------------------------------------
+
+Si la base ya fue creada por el create_all() del arranque (es el caso de esta
+instalación), marcala como que ya está en la migración inicial, para que
+Alembic no intente volver a crear las tablas:
+
+    alembic stamp head
+
+A partir de ahí, los cambios de esquema se hacen con nuevas migraciones.
+
+Nota
+----
+El create_all() del lifespan (en app/main.py) sigue activo como comodidad para
+desarrollo. En un despliegue serio conviene quitarlo y dejar que Alembic sea la
+única vía de creación/actualización del esquema.

@@ -1,0 +1,788 @@
+================================================================================
+  CONOCIMIENTO ABIERTO — Sistema de Gestión de Biblioteca Universitaria
+  DOCUMENTACIÓN TÉCNICA DEL CÓDIGO (para presentación del proyecto)
+================================================================================
+
+Este documento explica, archivo por archivo, cómo está construido el sistema:
+qué hace cada archivo, qué funciones contiene y para qué, y con qué otros
+archivos se comunica. Está pensado para entender el proyecto de punta a punta.
+
+
+================================================================================
+  1. VISIÓN GENERAL
+================================================================================
+
+¿QUÉ ES?
+Una aplicación web para gestionar una biblioteca: usuarios, catálogo de libros
+y sus ejemplares (copias físicas), préstamos, devoluciones, reservas, sanciones
+por mora y estadísticas. Tiene control de acceso por roles.
+
+STACK TECNOLÓGICO
+- Backend: Python + FastAPI (framework web) + SQLAlchemy (ORM) sobre PostgreSQL.
+- Frontend: HTML + CSS + JavaScript "puro" (sin framework), servido por la misma
+  app de FastAPI.
+- Seguridad: tokens de sesión firmados (HMAC) + hashing de contraseñas con
+  Argon2id + límite de peticiones (rate limiting).
+- Pruebas: pytest. Migraciones de base de datos: Alembic.
+
+ROLES DE USUARIO
+- ESTUDIANTE y DOCENTE: pueden navegar el catálogo y reservar libros sin stock.
+- BIBLIOTECARIO y ADMINISTRADOR ("personal"/"staff"): además gestionan libros,
+  préstamos, devoluciones, sanciones y usuarios.
+
+ARQUITECTURA EN CAPAS (backend)
+El backend está organizado en capas; cada una tiene una sola responsabilidad y
+solo habla con la capa de al lado. De abajo hacia arriba:
+
+   models   →  definen las TABLAS de la base (qué datos existen).
+   schemas  →  definen la FORMA de los datos que entran/salen por la API
+               (validación con Pydantic).
+   crud     →  funciones que LEEN/ESCRIBEN en la base (consultas SQL).
+   services →  LÓGICA DE NEGOCIO compleja que coordina varios crud
+               (p. ej. registrar un préstamo con todas sus reglas).
+   api      →  los ENDPOINTS HTTP (las URLs); reciben el pedido, llaman a
+               crud/services y devuelven la respuesta.
+   main     →  arma la aplicación, conecta todo y sirve el frontend.
+
+Ventaja: si mañana cambia una consulta SQL, se toca solo el crud; si cambia una
+regla de negocio, solo el service; la api casi no cambia.
+
+CÓMO FLUYE UNA PETICIÓN (ejemplo: registrar un préstamo)
+1. El bibliotecario hace clic en "Registrar Préstamo" en el navegador.
+2. prestamos.js llama a registrarPrestamo() de api.js.
+3. api.js (fetchAPI) hace un POST /prestamos/ con el token de sesión en el header.
+4. FastAPI enruta a api/prestamos.py → crear_prestamo().
+5. Antes, la dependencia require_roles verifica que sea personal autorizado.
+6. crear_prestamo() llama a services/prestamo_service.registrar_prestamo(),
+   que aplica las reglas (usuario activo, sin sanciones, hay ejemplar, límite…)
+   usando funciones de crud/.
+7. La respuesta vuelve como JSON; api.js la recibe y prestamos.js muestra el
+   resultado con un "toast".
+
+
+================================================================================
+  2. ESTRUCTURA DE CARPETAS
+================================================================================
+
+Antigravity/
+├── app/                        ← TODO el backend (Python/FastAPI)
+│   ├── main.py                 ← punto de entrada: arma la app y sirve el front
+│   ├── core/                   ← configuración y utilidades transversales
+│   │   ├── config.py           ← variables de entorno (.env)
+│   │   ├── database.py         ← conexión a la base y sesión
+│   │   ├── security.py         ← tokens de sesión (firmar/verificar)
+│   │   └── limiter.py          ← rate limiting (límite de peticiones)
+│   ├── models/                 ← tablas de la base (ORM)
+│   ├── schemas/                ← formas de datos de entrada/salida (Pydantic)
+│   ├── crud/                   ← operaciones de base de datos
+│   ├── services/               ← lógica de negocio compleja
+│   └── api/                    ← endpoints HTTP (routers)
+├── frontend/                   ← TODO el frontend (HTML/CSS/JS)
+│   ├── *.html                  ← las páginas
+│   ├── js/                     ← la lógica de cada página + cliente de la API
+│   └── css/styles.css          ← estilos
+├── tests/                      ← pruebas automáticas (pytest)
+├── migrations/                 ← migraciones de base de datos (Alembic)
+├── requirements.txt            ← dependencias de Python
+├── pytest.ini                  ← configuración de las pruebas
+├── alembic.ini                 ← configuración de Alembic
+└── .env / .env.example         ← variables de entorno (config sensible)
+
+
+================================================================================
+  3. BACKEND — PUNTO DE ENTRADA
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: app/main.py
+────────────────────────────────────────────────────────────────────────────
+PROPÓSITO
+Es el "armador" de toda la aplicación. Crea la instancia de FastAPI, le conecta
+todas las piezas y arranca el servidor. También sirve el frontend.
+
+CONTENIDO CLAVE
+- lifespan(app): se ejecuta al ARRANCAR la app. Hace dos cosas:
+    a) Valida la seguridad: si SECRET_KEY quedó con el valor de relleno y el
+       entorno es "production", se NIEGA a arrancar (evita desplegar inseguro);
+       en desarrollo solo muestra un aviso.
+    b) Crea las tablas en la base si no existen (Base.metadata.create_all).
+- Configura CORS (qué orígenes web pueden llamar a la API) usando la lista
+  configurable settings.origenes_permitidos.
+- Registra el rate limiter (app.state.limiter) y un manejador del error 429
+  ("Demasiados intentos…").
+- Incluye el api_router (todos los endpoints) con app.include_router.
+- Endpoint /health: verificación simple de que el servidor está vivo.
+- Monta el frontend: app.mount("/", StaticFiles(directory="frontend", html=True)).
+  Esto hace que la MISMA app sirva las páginas HTML y la API (mismo puerto).
+
+SE COMUNICA CON
+- app/api/__init__.py (api_router con todos los endpoints).
+- app/core/config.py (settings), app/core/database.py (Base, engine),
+  app/core/limiter.py (limiter), app/models (para registrar las tablas).
+
+
+================================================================================
+  4. BACKEND — NÚCLEO (app/core/)
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: app/core/config.py
+────────────────────────────────────────────────────────────────────────────
+PROPÓSITO
+Centraliza la configuración. Lee las variables del archivo .env y las expone
+tipadas mediante pydantic-settings.
+
+CONTENIDO
+- Clase Settings con: DATABASE_URL, PROJECT_NAME, ENVIRONMENT (development/
+  production), ALLOWED_ORIGINS (orígenes CORS separados por coma), SECRET_KEY,
+  ACCESS_TOKEN_EXPIRE_MINUTES.
+- Propiedades de ayuda:
+    · origenes_permitidos → convierte ALLOWED_ORIGINS en una lista.
+    · es_produccion → True si ENVIRONMENT == "production".
+    · secret_key_insegura → True si la clave es la de relleno por defecto.
+- settings: instancia global que importa todo el resto del proyecto.
+
+SE COMUNICA CON
+- La usan casi todos: database.py, security.py, main.py, migrations/env.py.
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: app/core/database.py
+────────────────────────────────────────────────────────────────────────────
+PROPÓSITO
+Configura la conexión a la base de datos (motor + sesiones) y la clase base de
+los modelos.
+
+CONTENIDO
+- engine: el "motor" de conexión a PostgreSQL (creado con la DATABASE_URL).
+- SessionLocal: fábrica de sesiones (cada pedido HTTP usa una sesión propia).
+- Base: clase declarativa base; TODOS los modelos heredan de ella.
+- get_db(): "dependencia" de FastAPI que entrega una sesión y la cierra al
+  terminar el pedido. Se inyecta en los endpoints con Depends(get_db).
+
+SE COMUNICA CON
+- app/core/config.py (DATABASE_URL). La usan: todos los modelos (Base), todos
+  los endpoints y crud (get_db / Session), main.py (Base, engine).
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: app/core/security.py
+────────────────────────────────────────────────────────────────────────────
+PROPÓSITO
+Maneja los TOKENS de sesión. Un token es una credencial firmada que el cliente
+guarda y manda en cada pedido para demostrar quién es.
+
+CONTENIDO
+- crear_token_acceso(usuario_id, rol): arma un token con el id, el rol y la
+  fecha de expiración, y lo FIRMA con HMAC-SHA256 usando SECRET_KEY. Sin la
+  clave, nadie puede falsificar un token válido.
+- decodificar_token(token): verifica la firma y la expiración; devuelve los
+  datos del token si es válido, o None si está vencido/alterado.
+- (helpers internos de codificación base64url).
+
+SE COMUNICA CON
+- app/core/config.py (SECRET_KEY, expiración).
+- La usan: app/api/auth.py (crear el token al loguearse) y app/api/deps.py
+  (decodificar el token en cada pedido protegido).
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: app/core/limiter.py
+────────────────────────────────────────────────────────────────────────────
+PROPÓSITO
+Define el "limitador de peticiones" (rate limiting) para frenar ataques de
+fuerza bruta y spam.
+
+CONTENIDO
+- limiter: instancia de Limiter (librería slowapi) que cuenta peticiones por
+  dirección IP.
+
+SE COMUNICA CON
+- La usan: app/api/auth.py (decoradores @limiter.limit en login/registro) y
+  app/main.py (registrar el limiter y el manejador del error 429).
+
+
+================================================================================
+  5. BACKEND — MODELOS (app/models/)  ·  las tablas de la base
+================================================================================
+
+Cada modelo es una clase de Python que SQLAlchemy traduce a una tabla. Sus
+atributos son las columnas, y las "relationship" son los vínculos entre tablas.
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: app/models/enums.py
+────────────────────────────────────────────────────────────────────────────
+PROPÓSITO
+Define las enumeraciones (conjuntos cerrados de valores) que usan los modelos.
+Garantizan que una columna solo pueda tener valores válidos.
+CONTENIDO
+- RolUsuario: ESTUDIANTE, DOCENTE, BIBLIOTECARIO, ADMINISTRADOR.
+- EstadoUsuario: ACTIVO, SANCIONADO, INACTIVO.
+- EstadoEjemplar: DISPONIBLE, PRESTADO, MANTENIMIENTO, PERDIDO.
+- EstadoPrestamo: ACTIVO, DEVUELTO, VENCIDO.
+- EstadoReserva: PENDIENTE, COMPLETADA, CANCELADA, EXPIRADA.
+- TipoSancion: MORA, DANIO, PERDIDA.
+SE COMUNICA CON: todos los modelos, varios schemas, crud y services.
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: app/models/usuario.py  → tabla "usuarios"
+────────────────────────────────────────────────────────────────────────────
+Columnas: id, dni (único), nombre, apellido, email (único), contrasena_hash
+(¡nunca la contraseña en texto plano!), rol, estado.
+Relaciones: prestamos, reservas, sanciones (un usuario tiene muchos de cada uno).
+SE COMUNICA CON: enums.py, database.py (Base). Lo usan crud/usuario y otros.
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: app/models/libro.py  → tabla "libros"
+────────────────────────────────────────────────────────────────────────────
+Columnas: id, titulo, autor, editorial, anio, isbn (único), categoria_id (FK).
+Relaciones: categoria (a qué categoría pertenece), ejemplares (sus copias
+físicas), reservas.
+NOTA: el libro es la "ficha bibliográfica"; las copias reales son los ejemplares.
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: app/models/ejemplar.py  → tabla "ejemplares"
+────────────────────────────────────────────────────────────────────────────
+Una copia física de un libro. Columnas: id, libro_id (FK), estado (DISPONIBLE,
+PRESTADO, etc.). Relaciones: libro, prestamos.
+Es lo que realmente se presta: un libro con 5 ejemplares puede prestarse 5 veces.
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: app/models/categoria.py  → tabla "categorias"
+────────────────────────────────────────────────────────────────────────────
+Columnas: id, nombre (único). Relación: libros. Sirve para clasificar el catálogo.
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: app/models/prestamo.py  → tabla "prestamos"
+────────────────────────────────────────────────────────────────────────────
+Registra cada préstamo. Columnas: id, usuario_id (FK), ejemplar_id (FK),
+fecha_inicio, fecha_vencimiento, fecha_devolucion_real, estado.
+Relaciones: usuario, ejemplar, sancion (un préstamo genera como máximo una).
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: app/models/reserva.py  → tabla "reservas"
+────────────────────────────────────────────────────────────────────────────
+Cuando un libro no tiene ejemplares disponibles, un usuario lo reserva.
+Columnas: id, usuario_id (FK), libro_id (FK), fecha_reserva, estado.
+Relaciones: usuario, libro.
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: app/models/sancion.py  → tabla "sanciones"
+────────────────────────────────────────────────────────────────────────────
+Multa generada por una devolución tardía (u otro motivo). Columnas: id,
+usuario_id (FK), prestamo_id (FK, único), tipo, monto, fecha_inicio, fecha_fin.
+"Vigente" = sin fecha_fin o con fecha_fin de hoy en adelante. Relaciones:
+usuario, prestamo.
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: app/models/__init__.py
+────────────────────────────────────────────────────────────────────────────
+PROPÓSITO: importa y reexporta todos los modelos y enums. Cumple dos funciones:
+1) que SQLAlchemy "vea" todas las tablas al crear el esquema; 2) permitir
+importaciones limpias (from app.models import Usuario, Libro, ...).
+
+
+================================================================================
+  6. BACKEND — SCHEMAS (app/schemas/)  ·  forma de los datos de la API
+================================================================================
+
+Los schemas (Pydantic) definen y VALIDAN la forma de los datos. Hay schemas de
+ENTRADA (lo que el cliente manda: "...Create"/"...Request") y de SALIDA (lo que
+la API devuelve: "...Response"/"...Detalle"). Pydantic rechaza datos inválidos
+automáticamente (p. ej. un email mal escrito).
+
+- schemas/usuario.py
+    · UsuarioCreate (entrada): dni, nombre, apellido, email (validado), contrasena,
+      rol (por defecto ESTUDIANTE).
+    · UsuarioResponse (salida): datos públicos del usuario; NO incluye el hash.
+- schemas/auth.py
+    · LoginRequest: email + password.
+    · RegistroRequest: datos de auto-registro (rol limitado a estudiante/docente).
+    · TokenResponse: access_token + token_type + usuario.
+- schemas/libro.py
+    · LibroCreate (entrada), LibroUpdate (entrada, parcial: todos los campos
+      opcionales; cantidad_ejemplares = total deseado de copias).
+    · LibroResponse (salida): incluye categoria y ejemplares.
+    · LibrosPagina (salida): { total, skip, limit, items } → para la paginación.
+    · DisponibilidadResponse: titulo, isbn, total_ejemplares, ejemplares_disponibles.
+- schemas/ejemplar.py
+    · EjemplarResponse: id, libro_id, estado (no hay "Create": se generan solos).
+- schemas/categoria.py
+    · CategoriaCreate (entrada: nombre), CategoriaResponse (salida).
+- schemas/prestamo.py
+    · PrestamoCreate (entrada: usuario_id, libro_id).
+    · DevolucionCreate (entrada: fecha_devolucion opcional).
+    · PrestamoResponse, DevolucionResponse (incluye préstamo + posible sanción +
+      mensaje), SancionResponse.
+    · PrestamoDetalle (salida enriquecida para listados: agrega nombre del usuario,
+      título del libro y campos calculados "vencido"/"dias_vencido").
+- schemas/reserva.py
+    · ReservaCreate (entrada: libro_id), ReservaDetalle (salida enriquecida).
+- schemas/sancion.py
+    · SancionDetalle (salida enriquecida: usuario, monto, vigente, etc.).
+- schemas/stats.py
+    · StatsResponse: contadores globales del dashboard.
+
+SE COMUNICAN CON: los enums (models/enums.py) para los campos de estado/rol, y
+los usan los endpoints (api/) como response_model y para validar la entrada.
+
+
+================================================================================
+  7. BACKEND — CRUD (app/crud/)  ·  operaciones de base de datos
+================================================================================
+
+CRUD = Create, Read, Update, Delete. Son las funciones que hablan DIRECTAMENTE
+con la base (consultas con SQLAlchemy). No tienen lógica de negocio compleja
+(esa va en services/); solo leen y escriben datos.
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: app/crud/usuario.py
+────────────────────────────────────────────────────────────────────────────
+FUNCIONES
+- _hash_password(password): genera el hash Argon2id (salado, lento, seguro).
+- verificar_password(password, hash): compara una contraseña con su hash;
+  soporta el formato Argon2 y el viejo SHA-256 (compatibilidad).
+- necesita_rehash(hash): indica si el hash es viejo y conviene actualizarlo.
+- crear_usuario(datos): hashea la contraseña y guarda el usuario.
+- autenticar_usuario(email, password): valida credenciales; si el hash era
+  viejo, lo MIGRA a Argon2 en el primer login (migración transparente).
+- obtener_usuario_por_email / por_id / por_dni: búsquedas exactas.
+- buscar_usuarios(dni, nombre, limit): búsqueda INCREMENTAL para el panel —
+  DNI por prefijo y nombre/apellido por coincidencia parcial (combinables).
+SE COMUNICA CON: models/usuario, schemas/usuario, argon2 (librería). La usan:
+api/usuarios, api/auth, api/deps, services/prestamo_service.
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: app/crud/libro.py
+────────────────────────────────────────────────────────────────────────────
+FUNCIONES
+- listar_libros(busqueda, skip, limit): lista con filtro por título/autor y
+  paginación.
+- contar_libros(busqueda): total de coincidencias (para la paginación).
+- crear_libro(datos): crea el libro y genera sus ejemplares.
+- agregar_ejemplares(libro_id, cantidad): crea N ejemplares DISPONIBLE.
+- obtener_libro_por_id / por_isbn.
+- actualizar_libro(libro, datos): actualización parcial; si cambia la cantidad
+  de ejemplares, llama a _ajustar_ejemplares.
+- _ajustar_ejemplares(libro, nueva_cantidad): crea o ELIMINA copias para llegar
+  al total; NUNCA elimina copias prestadas o con historial (regla de seguridad).
+- eliminar_libro(libro): borrado SEGURO; bloquea si hay préstamos activos,
+  reservas pendientes o sanciones vigentes; si no, borra en cascada.
+- contar_ejemplares_disponibles(libro_id).
+- buscar_ejemplar_disponible(libro_id): toma una copia libre para prestar.
+SE COMUNICA CON: models/libro, models/ejemplar, models/enums, schemas/libro.
+La usan: api/libros, api/reservas, services/prestamo_service.
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: app/crud/categoria.py
+────────────────────────────────────────────────────────────────────────────
+FUNCIONES: listar_categorias, obtener_categoria_por_nombre (unicidad),
+crear_categoria. SE COMUNICA CON: models/categoria, schemas/categoria. La usa:
+api/categorias.
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: app/crud/prestamo.py
+────────────────────────────────────────────────────────────────────────────
+FUNCIONES
+- ESTADOS_EN_CURSO: constante (ACTIVO + VENCIDO) = préstamos "no devueltos".
+- marcar_prestamos_vencidos(): pasa a VENCIDO los ACTIVOS cuyo plazo expiró
+  (se llama al listar, ya que no hay tarea programada).
+- listar_prestamos(estado_filtro, usuario_id): listado con filtros.
+- contar_prestamos_activos(usuario_id): para el límite por usuario.
+- obtener_prestamo_por_id, obtener_prestamos_activos_usuario.
+- tiene_sanciones_vigentes(usuario_id): además, si no quedan vigentes,
+  REACTIVA al usuario sancionado automáticamente.
+SE COMUNICA CON: models/prestamo, models/sancion, models/usuario, models/enums.
+La usan: services/prestamo_service, api/prestamos, api/stats.
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: app/crud/reserva.py
+────────────────────────────────────────────────────────────────────────────
+FUNCIONES: obtener_reserva_por_id, obtener_reserva_pendiente,
+reservas_pendientes_libro, listar_reservas, crear_reserva, cancelar_reserva,
+completar_reserva_si_existe (al prestarle el libro al que reservó, marca su
+reserva como COMPLETADA). SE COMUNICA CON: models/reserva, models/enums. La
+usan: api/reservas, services/prestamo_service.
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: app/crud/sancion.py
+────────────────────────────────────────────────────────────────────────────
+FUNCIONES: es_vigente, obtener_sancion, listar_sanciones, pagar_sancion (cierra
+la sanción y reactiva al usuario si no le quedan otras vigentes). SE COMUNICA
+CON: models/sancion, models/usuario, models/enums. La usa: api/sanciones.
+
+
+================================================================================
+  8. BACKEND — SERVICIOS (app/services/)  ·  lógica de negocio
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: app/services/prestamo_service.py
+────────────────────────────────────────────────────────────────────────────
+PROPÓSITO
+Concentra las REGLAS de negocio de préstamos y devoluciones, que coordinan
+varias tablas. Es el "cerebro" de la operación más compleja del sistema.
+
+CONSTANTES
+- DIAS_PRESTAMO_POR_ROL: duración del préstamo según el rol (estudiante 14 días,
+  docente 30, etc.).
+- LIMITE_PRESTAMOS_POR_ROL: máximo de préstamos simultáneos por rol (estudiante
+  3, docente 5, staff 10).
+- MULTA_POR_DIA: monto de la multa por día de atraso.
+
+FUNCIONES
+- registrar_prestamo(usuario_id, libro_id): aplica TODAS las validaciones en
+  orden: 1) el usuario existe; 2) está ACTIVO; 3) no tiene sanciones vigentes;
+  4) no superó su límite de préstamos; 5) hay un ejemplar disponible. Si todo
+  pasa: marca el ejemplar como PRESTADO, calcula la fecha de vencimiento según
+  el rol, crea el préstamo y, si el usuario tenía una reserva pendiente de ese
+  libro, la marca como COMPLETADA.
+- registrar_devolucion(prestamo_id, fecha_devolucion): marca el préstamo como
+  DEVUELTO, el ejemplar como DISPONIBLE; si la devolución fue tardía, calcula
+  la multa, crea la SANCIÓN y deja al usuario SANCIONADO; avisa en el mensaje si
+  el libro devuelto tiene reservas pendientes. Devuelve { préstamo, sanción,
+  mensaje }.
+
+SE COMUNICA CON
+- crud/libro (buscar ejemplar), crud/prestamo (contar activos, estados),
+  crud/usuario (obtener usuario), crud/reserva (completar reserva / pendientes),
+  models (Prestamo, Sancion, enums). La usa: api/prestamos.
+
+
+================================================================================
+  9. BACKEND — API / ENDPOINTS (app/api/)  ·  las URLs del sistema
+================================================================================
+
+Cada archivo es un "router": agrupa endpoints de un tema. Reciben el pedido
+HTTP, verifican permisos, llaman a crud/services y devuelven JSON.
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: app/api/__init__.py
+────────────────────────────────────────────────────────────────────────────
+PROPÓSITO: arma el api_router central y le "incluye" todos los routers con su
+prefijo (/auth, /usuarios, /libros, /categorias, /prestamos, /reservas,
+/sanciones, /stats). Es lo que main.py monta en la app.
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: app/api/deps.py  ·  dependencias de seguridad (¡muy importante!)
+────────────────────────────────────────────────────────────────────────────
+PROPÓSITO: provee las "dependencias" reutilizables de autenticación/autorización
+que protegen los endpoints.
+FUNCIONES
+- get_current_user(authorization, db): lee el header "Authorization: Bearer
+  <token>", lo decodifica (security.py), carga el usuario (crud/usuario) y lo
+  devuelve. Si falta el token, es inválido o expiró → error 401.
+- require_roles(*roles): "fábrica" de dependencias. Devuelve una dependencia que
+  exige que el usuario tenga uno de los roles permitidos; si no → error 403.
+  Ej.: require_roles(BIBLIOTECARIO, ADMINISTRADOR) protege lo de personal.
+SE COMUNICA CON: core/security, crud/usuario, models. La usan TODOS los routers
+que tienen endpoints protegidos.
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: app/api/auth.py  ·  prefijo /auth
+────────────────────────────────────────────────────────────────────────────
+ENDPOINTS
+- POST /auth/login: valida credenciales (crud.autenticar_usuario) y devuelve un
+  token (security.crear_token_acceso). Limitado a 10/min por IP (limiter).
+- POST /auth/registro: AUTO-registro de estudiante/docente (rechaza roles de
+  personal con 403). Crea el usuario y devuelve un token (queda logueado).
+  Limitado a 5/min por IP.
+SE COMUNICA CON: crud/usuario, core/security, core/limiter, schemas/auth.
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: app/api/usuarios.py  ·  prefijo /usuarios   (todo solo-personal)
+────────────────────────────────────────────────────────────────────────────
+ENDPOINTS
+- GET /usuarios/buscar?dni=...: busca UN usuario por DNI exacto.
+- GET /usuarios/?dni=&nombre=: BÚSQUEDA INCREMENTAL (prefijo de DNI + nombre/
+  apellido parcial); devuelve una lista. (crud.buscar_usuarios)
+- POST /usuarios/: crea un usuario de CUALQUIER rol (única vía para crear
+  personal); valida email/DNI no repetidos.
+SE COMUNICA CON: crud/usuario, deps.require_roles, schemas/usuario.
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: app/api/libros.py  ·  prefijo /libros
+────────────────────────────────────────────────────────────────────────────
+ENDPOINTS
+- GET /libros/?busqueda=&skip=&limit=: catálogo PAGINADO (público para usuarios
+  logueados); devuelve { total, skip, limit, items }.
+- POST /libros/: crea un libro (solo personal).
+- PUT /libros/{id}: edita un libro y/o ajusta su cantidad de ejemplares (solo
+  personal); valida ISBN único; traduce errores de regla a HTTP 400.
+- DELETE /libros/{id}: borrado seguro (solo personal); 409 si tiene obligaciones.
+- GET /libros/{id}/disponibilidad: cuántas copias hay disponibles.
+SE COMUNICA CON: crud/libro, deps.require_roles, schemas/libro.
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: app/api/categorias.py  ·  prefijo /categorias
+────────────────────────────────────────────────────────────────────────────
+ENDPOINTS: GET /categorias/ (listar) · POST /categorias/ (crear, solo personal,
+nombre único). SE COMUNICA CON: crud/categoria, deps, schemas/categoria.
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: app/api/prestamos.py  ·  prefijo /prestamos   (todo solo-personal)
+────────────────────────────────────────────────────────────────────────────
+ENDPOINTS
+- GET /prestamos/?estado=&dni=: lista de préstamos con filtros; antes marca los
+  vencidos. Usa _a_detalle() para enriquecer cada préstamo (nombre, título,
+  días de atraso).
+- POST /prestamos/: registra un préstamo (services.registrar_prestamo).
+- POST /prestamos/{id}/devolucion: registra la devolución
+  (services.registrar_devolucion).
+SE COMUNICA CON: services/prestamo_service, crud/prestamo, crud/usuario, deps,
+schemas/prestamo.
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: app/api/reservas.py  ·  prefijo /reservas
+────────────────────────────────────────────────────────────────────────────
+ENDPOINTS
+- POST /reservas/: el usuario logueado reserva un libro SIN stock (valida que no
+  haya disponibles y que no tenga ya una reserva pendiente).
+- GET /reservas/mias: las reservas del usuario logueado.
+- GET /reservas/?dni=&estado=: TODAS las reservas (solo personal).
+- POST /reservas/{id}/cancelar: cancela una reserva (la propia, o cualquiera si
+  es personal).
+SE COMUNICA CON: crud/reserva, crud/libro, crud/usuario, deps (get_current_user
+y require_roles), schemas/reserva. NOTA: este router usa get_current_user para
+operaciones por-usuario (el primer uso real de la identidad del logueado).
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: app/api/sanciones.py  ·  prefijo /sanciones   (todo solo-personal)
+────────────────────────────────────────────────────────────────────────────
+ENDPOINTS: GET /sanciones/?dni=&solo_vigentes= (listar) · POST
+/sanciones/{id}/pagar (saldar y reactivar al usuario). SE COMUNICA CON:
+crud/sancion, crud/usuario, deps, schemas/sancion.
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: app/api/stats.py  ·  prefijo /stats
+────────────────────────────────────────────────────────────────────────────
+ENDPOINT: GET /stats/ (cualquier usuario logueado): cuenta libros, ejemplares
+disponibles/prestados, préstamos activos/vencidos, sanciones vigentes y reservas
+pendientes (marca vencidos antes de contar). Alimenta el Dashboard.
+SE COMUNICA CON: crud/prestamo (marcar vencidos), models, deps.get_current_user.
+
+
+================================================================================
+  10. FRONTEND  ·  HTML + CSS + JavaScript
+================================================================================
+
+CÓMO ESTÁ ARMADO
+- Hay una página HTML por sección. Todas cargan los scripts en este orden:
+    1) js/sidebar.js  →  2) <script>renderSidebar('pagina')</script>
+    3) js/api.js      →  4) js/<pagina>.js
+  Así, cuando corre la lógica de la página, ya están disponibles el menú lateral
+  y todas las funciones de la API.
+- El frontend NO tiene su propio servidor: lo sirve la misma app de FastAPI
+  (por eso api.js usa BASE_URL = "" → mismo origen).
+- La sesión (token + datos del usuario) se guarda en localStorage del navegador.
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: frontend/js/api.js  ·  EL CLIENTE CENTRAL (lo usan todas las páginas)
+────────────────────────────────────────────────────────────────────────────
+PROPÓSITO: única "puerta" del frontend hacia el backend. Centraliza las llamadas
+HTTP, el manejo de la sesión y utilidades de interfaz.
+CONTENIDO
+- fetchAPI(endpoint, options): función base. Agrega el header Content-Type,
+  adjunta el token si hay sesión, serializa el body a JSON, parsea la respuesta
+  (soporta respuestas sin cuerpo como el 204), y si hay error extrae el mensaje
+  del backend (campo "detail"). Si recibe 401 (sesión vencida) limpia la sesión
+  y redirige al login.
+- Sesión: loginRequest, registroRequest (guardan token+usuario), cerrarSesion,
+  getUsuarioActual, esStaff, requireAuth (exige login), requireStaff (exige rol
+  de personal). requireAuth/requireStaff son las "guardias" que cada página
+  llama al inicio.
+- Llamadas a la API (una por operación): buscarLibros (paginado),
+  consultarDisponibilidad, buscarUsuarioPorDNI, buscarUsuarios, registrarPrestamo,
+  registrarDevolucion, listarPrestamos, listarSanciones, pagarSancion,
+  obtenerStats, listarCategorias, crearCategoria, reservarLibro, listarMisReservas,
+  listarReservas, cancelarReserva, registrarUsuario, crearLibro, actualizarLibro,
+  eliminarLibro.
+- UI: showToast (notificaciones flotantes), showSancionModal / closeModal (modal
+  de sanción).
+SE COMUNICA CON: el backend (todos los endpoints) y la usan TODOS los demás .js.
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: frontend/js/sidebar.js
+────────────────────────────────────────────────────────────────────────────
+PROPÓSITO: dibuja el menú lateral compartido por todas las páginas internas.
+FUNCIÓN: renderSidebar(activePage): arma los enlaces (marca el activo), OCULTA
+los enlaces de personal (Préstamos, Devoluciones, Sanciones, Usuarios) si el
+usuario no es staff (lee el rol de localStorage), y muestra abajo el usuario
+logueado con su botón de "cerrar sesión".
+SE COMUNICA CON: localStorage (rol) y, al hacer logout, cerrarSesion() de api.js.
+
+────────────────────────────────────────────────────────────────────────────
+PÁGINAS Y SU LÓGICA
+────────────────────────────────────────────────────────────────────────────
+
+login.html + js/login.js
+  Pantalla de inicio de sesión. login.js toma email/contraseña, llama a
+  loginRequest() y, si todo va bien, redirige al dashboard; si falla, muestra el
+  error. Incluye enlace a "Crear cuenta".
+
+registro.html + js/registro.js
+  Auto-registro de estudiantes/docentes. Valida campos (contraseña ≥ 8),
+  llama a registroRequest() y entra al sistema automáticamente. El selector de
+  rol solo ofrece Estudiante/Docente.
+
+dashboard.html + js/dashboard.js
+  Panel de control. dashboard.js llama requireAuth(), pide obtenerStats() y
+  llena las 6 tarjetas de métricas y las barras del catálogo. Oculta las
+  "acciones rápidas" de personal si el usuario no es staff.
+
+index.html + js/catalogo.js   (el CATÁLOGO)
+  Lista de libros con búsqueda, paginación y stats globales. catalogo.js:
+  · requireAuth() y, si no es staff, oculta el botón "Registrar Libro".
+  · cargarCatalogo(): trae una PÁGINA de libros (12 por vez) y dibuja las
+    tarjetas; actualizarStatsGlobales() llena las tarjetas con totales reales;
+    renderPaginacion() dibuja "Anterior/Siguiente" y "Mostrando X–Y de Z".
+  · Modales de Registrar / Editar / Eliminar libro (solo personal); el de editar
+    ajusta la cantidad de ejemplares.
+  · Categorías: cargarCategorias() llena los selectores; nuevaCategoria() crea
+    una al vuelo.
+  · reservarLibroUI(): botón "Reservar" en los libros sin stock (cualquier
+    usuario logueado).
+
+prestamos.html + js/prestamos.js   (solo personal)
+  Registrar un préstamo. prestamos.js: búsqueda incremental del usuario por
+  DNI/nombre con lista de candidatos clickeable (y atajos: DNI exacto o único
+  resultado se autoseleccionan); verificación del libro por ID con su
+  disponibilidad; al confirmar llama a registrarPrestamo(). Usa un contador de
+  secuencia para descartar respuestas viejas (race conditions).
+
+devoluciones.html + js/devoluciones.js   (solo personal)
+  Devolver libros. Se busca al usuario por DNI y se listan sus préstamos en
+  curso como tarjetas; cada una tiene botón "Registrar Devolución"
+  (registrarDevolucion). Si la devolución genera sanción, muestra el modal de
+  sanción.
+
+reservas.html + js/reservas.js
+  Vista de reservas ADAPTADA AL ROL: el personal ve TODAS (con filtros por DNI/
+  estado) y puede cancelar cualquiera; un estudiante/docente ve solo LAS SUYAS
+  (listarMisReservas) y cancela las propias. Es la única página de panel visible
+  para todos los logueados.
+
+sanciones.html + js/sanciones.js   (solo personal)
+  Lista las multas (filtro por DNI y "solo vigentes"); cada sanción vigente tiene
+  botón "Saldar" (pagarSancion), que la cierra y reactiva al usuario.
+
+usuarios.html + js/usuarios.js   (solo personal)
+  Dos paneles: registrar un usuario nuevo (cualquier rol) y BUSCAR usuarios de
+  forma incremental por prefijo de DNI y/o nombre (buscarUsuarios), mostrando
+  tarjetas con sus datos. También descarta respuestas fuera de orden.
+
+404.html
+  Página de "no encontrado" para rutas inexistentes.
+
+────────────────────────────────────────────────────────────────────────────
+ARCHIVO: frontend/css/styles.css
+────────────────────────────────────────────────────────────────────────────
+PROPÓSITO: TODOS los estilos visuales (un solo archivo). Define las variables de
+color (tema oscuro), el layout (sidebar + contenido), y los componentes
+reutilizables: tarjetas, botones (primario/secundario/peligro), formularios,
+badges, modales, toasts, barras del dashboard, paginación, etc.
+SE COMUNICA CON: lo referencian todas las páginas HTML (con un sufijo ?v=...
+de "cache busting" para forzar la recarga al actualizar).
+
+
+================================================================================
+  11. PRUEBAS AUTOMÁTICAS (tests/)  ·  pytest
+================================================================================
+
+Verifican que la lógica funcione, sin tocar la base real (usan una base SQLite
+temporal). Se corren con: python -m pytest.
+
+- tests/conftest.py: la "preparación" común. Crea la base de prueba, sustituye
+  get_db para que la API la use, ofrece un cliente HTTP de prueba y fixtures de
+  usuarios (uno por rol) y de login. También DESACTIVA el rate limiting por
+  defecto para no interferir.
+- test_auth.py: hashing (Argon2 + compatibilidad SHA-256 + migración), login,
+  registro (rechaza staff), permisos.
+- test_libros.py: crear/editar ejemplares, borrado seguro, permisos, paginación.
+- test_prestamos.py: reglas (límite y duración por rol, sanción por mora,
+  marcado de vencidos), permisos.
+- test_reservas.py: reglas (solo sin stock, sin duplicados), cancelación e
+  integración con préstamos (la reserva se completa al prestar).
+- test_sanciones.py: generar, listar y pagar (reactiva al usuario).
+- test_stats_categorias.py: contadores del dashboard y CRUD de categorías.
+- test_rate_limit.py: que el login se limite tras varios intentos (429).
+- test_usuarios.py: la búsqueda incremental (prefijo de DNI, nombre/apellido,
+  combinaciones, permisos).
+
+
+================================================================================
+  12. MIGRACIONES DE BASE DE DATOS (migrations/)  ·  Alembic
+================================================================================
+
+Las migraciones son el "control de versiones" de la ESTRUCTURA de la base
+(crear/alterar tablas) sin perder datos.
+- alembic.ini: configuración general de Alembic.
+- migrations/env.py: conecta Alembic con los modelos del proyecto (Base.metadata)
+  y con la DATABASE_URL del .env.
+- migrations/versions/...esquema_inicial.py: la primera migración; crea las 7
+  tablas con sus enums, claves foráneas e índices (upgrade) y sabe revertirlas
+  (downgrade).
+- migrations/README: explica el flujo (alembic upgrade head, revision
+  --autogenerate, y "alembic stamp head" para adoptar Alembic en una base que ya
+  tiene las tablas).
+
+
+================================================================================
+  13. ARCHIVOS DE CONFIGURACIÓN (raíz)
+================================================================================
+
+- requirements.txt: lista de dependencias de Python (FastAPI, uvicorn,
+  SQLAlchemy, psycopg2, pydantic, argon2-cffi, slowapi, alembic, pytest, httpx).
+- pytest.ini: configuración de las pruebas (dónde buscarlas, silenciar avisos).
+- .env: valores reales de configuración (DATABASE_URL, SECRET_KEY, etc.) — NO se
+  comparte. .env.example: plantilla con los nombres de las variables.
+- iniciar-app.bat: script para levantar el servidor en Windows.
+
+
+================================================================================
+  14. MAPA DE COMUNICACIÓN (resumen "quién llama a quién")
+================================================================================
+
+NAVEGADOR (páginas .html)
+   └─ usa →  js/<pagina>.js  +  js/sidebar.js
+                  └─ usan →  js/api.js  (fetchAPI)
+                                 └─ HTTP →  FastAPI
+
+FASTAPI (backend)
+   main.py
+     └─ incluye →  api/__init__.py
+                       └─ routers (auth, usuarios, libros, categorias,
+                          prestamos, reservas, sanciones, stats)
+                              ├─ usan →  api/deps.py  (seguridad por token/rol)
+                              │             └─ usa →  core/security  +  crud/usuario
+                              ├─ usan →  crud/*       (acceso a datos)
+                              │             └─ usan →  models/*  (tablas)
+                              ├─ (préstamos) usa →  services/prestamo_service
+                              │                         └─ usa →  varios crud/*
+                              └─ usan →  schemas/*    (validar entrada/salida)
+
+TRANSVERSALES
+   core/config (settings)  →  lo usa casi todo.
+   core/database (get_db, Base, engine)  →  crud, api, main, migrations.
+   core/limiter  →  api/auth + main.
+
+
+================================================================================
+  15. CONCEPTOS CLAVE PARA LA PRESENTACIÓN (glosario rápido)
+================================================================================
+
+- API REST: conjunto de URLs (endpoints) que devuelven datos en JSON.
+- ORM (SQLAlchemy): permite trabajar la base con objetos de Python en vez de
+  escribir SQL a mano. Un "modelo" = una tabla.
+- Schema (Pydantic): define y valida la forma de los datos de entrada/salida.
+- CRUD: las 4 operaciones básicas sobre datos (crear, leer, actualizar, borrar).
+- Dependencia (Depends de FastAPI): algo que se "inyecta" en un endpoint, como la
+  sesión de base (get_db) o la verificación de rol (require_roles).
+- Token de sesión: credencial firmada que el navegador guarda y envía en cada
+  pedido para demostrar quién es (no se reenvía la contraseña).
+- Hashing (Argon2id): la contraseña NO se guarda; se guarda un "resumen"
+  irreversible. Al loguear se compara el resumen, no la contraseña.
+- Rate limiting: límite de cantidad de pedidos por IP (frena fuerza bruta/spam).
+- Migración (Alembic): cambio versionado de la estructura de la base.
+- CORS: regla del navegador sobre qué sitios pueden llamar a la API.
+
+================================================================================
+  FIN DEL DOCUMENTO
+================================================================================

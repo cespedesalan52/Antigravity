@@ -1,0 +1,28 @@
+# ── Secretos y entorno ──────────────────────────────────────────
+.env
+.venv/
+venv/
+env/
+
+# ── Python ──────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# ── Base de datos local y temporales ────────────────────────────
+*.db
+*.sqlite3
+_alembic_tmp.db
+_verif_mig.db
+
+# ── Binarios / ejecutables (p. ej. el túnel cloudflared) ───────
+*.exe
+cloudflared.exe
+
+# ── Herramientas / editor / SO ──────────────────────────────────
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

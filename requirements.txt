@@ -1,0 +1,31 @@
+# ========================================
+# Conocimiento Abierto - Dependencias
+# ========================================
+
+# Framework Web
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+
+# ORM y Base de Datos
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.9
+
+# Validación y Serialización
+pydantic[email]>=2.0.0
+pydantic-settings>=2.2.0
+
+# Hashing de contraseñas (Argon2id)
+argon2-cffi>=23.1.0
+
+# Rate limiting (límite de peticiones por IP)
+slowapi>=0.1.9
+
+# Variables de Entorno
+python-dotenv>=1.0.0
+
+# Migraciones
+alembic>=1.13.0
+
+# Testing
+pytest>=8.0.0
+httpx>=0.27.0

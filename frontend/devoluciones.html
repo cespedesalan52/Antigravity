@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Panel bibliotecario para registrar devoluciones de libros y gestionar sanciones por mora en Conocimiento Abierto.">
+    <title>Devoluciones — Conocimiento Abierto</title>
+    <link rel="stylesheet" href="css/styles.css?v=20260613l">
+</head>
+<body>
+    <div id="sidebar-container"></div>
+    <div class="app-layout">
+
+        <!-- ── Main Content ─────────────────────────────── -->
+        <main class="main-content">
+            <header class="page-header">
+                <h2>Devoluciones</h2>
+                <p>Panel bibliotecario — Buscá al usuario por DNI y devolvé sus préstamos en curso</p>
+            </header>
+
+            <div class="form-panel">
+                <div class="form-row">
+                    <!-- ── Campo: DNI ────────────────────────── -->
+                    <div class="form-group">
+                        <label class="form-label" for="input-dni">DNI del Usuario</label>
+                        <input
+                            type="text"
+                            class="form-input"
+                            id="input-dni"
+                            placeholder="Ej: 40123456"
+                            autocomplete="off"
+                        >
+                        <div class="form-hint">La búsqueda se ejecuta automáticamente al escribir</div>
+                    </div>
+
+                    <!-- ── Campo: Fecha de devolución ────────── -->
+                    <div class="form-group">
+                        <label class="form-label" for="input-fecha">Fecha de Devolución <span style="color:var(--text-muted);font-weight:400">(opcional)</span></label>
+                        <input type="date" class="form-input" id="input-fecha">
+                        <div class="form-hint">Si se deja vacío, se usa la fecha de hoy</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Resultado: préstamos del usuario ──────────── -->
+            <div id="resultado-prestamos"></div>
+        </main>
+    </div>
+
+    <!-- ── Modal de Sanción ──────────────────────────────── -->
+    <div class="modal-overlay" id="modal-overlay" onclick="if(event.target===this)closeModal()">
+        <div class="modal modal-warning">
+            <div class="modal-header">
+                <div class="modal-header-icon">
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                        <line x1="12" y1="9" x2="12" y2="13"/>
+                        <line x1="12" y1="17" x2="12.01" y2="17"/>
+                    </svg>
+                </div>
+                <div>
+                    <h3>Sanción Aplicada</h3>
+                    <p>El usuario ha sido sancionado por devolución tardía</p>
+                </div>
+            </div>
+            <div class="modal-body">
+                <p id="modal-mensaje" style="font-size:0.88rem;color:var(--text-secondary);margin-bottom:16px;line-height:1.6;"></p>
+                <div class="modal-detail-grid">
+                    <div class="modal-detail">
+                        <div class="modal-detail-label">Monto Multa</div>
+                        <div class="modal-detail-value text-danger" id="modal-monto">—</div>
+                    </div>
+                    <div class="modal-detail">
+                        <div class="modal-detail-label">Tipo</div>
+                        <div class="modal-detail-value text-warning" id="modal-tipo">—</div>
+                    </div>
+                    <div class="modal-detail">
+                        <div class="modal-detail-label">Inicio Sanción</div>
+                        <div class="modal-detail-value" id="modal-fecha-inicio">—</div>
+                    </div>
+                    <div class="modal-detail">
+                        <div class="modal-detail-label">Fin Sanción</div>
+                        <div class="modal-detail-value" id="modal-fecha-fin">—</div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal()">Cerrar</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/sidebar.js?v=20260613l"></script>
+    <script>renderSidebar('devoluciones')</script>
+    <script src="js/api.js?v=20260613l"></script>
+    <script src="js/devoluciones.js?v=20260613l"></script>
+</body>
+</html>

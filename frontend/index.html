@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Catálogo digital de la biblioteca universitaria Conocimiento Abierto. Busca y explora libros disponibles para préstamo.">
+    <title>Catálogo — Conocimiento Abierto</title>
+    <link rel="stylesheet" href="css/styles.css?v=20260613l">
+</head>
+<body>
+    <div id="sidebar-container"></div>
+    <div class="app-layout">
+
+        <!-- ── Main Content ─────────────────────────────── -->
+        <main class="main-content">
+            <header class="page-header page-header-row">
+                <div>
+                    <h2>Catálogo de Libros</h2>
+                    <p>Explora nuestra colección y consulta la disponibilidad en tiempo real</p>
+                </div>
+                <button class="btn btn-primary" id="btn-abrir-modal-libro">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+                    </svg>
+                    Registrar Libro
+                </button>
+            </header>
+
+            <!-- Stats -->
+            <div class="stats-row" id="stats-row">
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-total">—</div>
+                    <div class="stat-label">Libros Registrados</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-disponibles">—</div>
+                    <div class="stat-label">Ejemplares Disponibles</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-prestados">—</div>
+                    <div class="stat-label">En Préstamo</div>
+                </div>
+            </div>
+
+            <!-- Search -->
+            <div class="search-container">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="11" cy="11" r="8"/>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                </svg>
+                <input
+                    type="text"
+                    class="search-input"
+                    id="search-input"
+                    placeholder="Buscar por título o autor..."
+                    autocomplete="off"
+                >
+            </div>
+
+            <!-- Book Grid -->
+            <div class="card-grid" id="book-grid">
+                <!-- Skeleton loading -->
+                <div class="skeleton skeleton-card"></div>
+                <div class="skeleton skeleton-card"></div>
+                <div class="skeleton skeleton-card"></div>
+                <div class="skeleton skeleton-card"></div>
+                <div class="skeleton skeleton-card"></div>
+                <div class="skeleton skeleton-card"></div>
+            </div>
+
+            <!-- Empty State -->
+            <div class="empty-state" id="empty-state" style="display: none;">
+                <div class="empty-state-icon">🔍</div>
+                <h3>Sin resultados</h3>
+                <p>No se encontraron libros que coincidan con tu búsqueda.</p>
+            </div>
+
+            <!-- Paginación -->
+            <div class="paginacion" id="paginacion"></div>
+        </main>
+    </div>
+
+    <!-- ── Modal Registrar Libro ──────────────────────────────── -->
+    <div class="modal-overlay" id="modal-libro-overlay" onclick="if(event.target===this)cerrarModalLibro()">
+        <div class="modal modal-success">
+            <div class="modal-header">
+                <div class="modal-header-icon" style="background:rgba(99,102,241,0.15);color:var(--accent-start);">
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+                        <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+                    </svg>
+                </div>
+                <div>
+                    <h3>Registrar Nuevo Libro</h3>
+                    <p>Completa los datos del libro a agregar al catálogo</p>
+                </div>
+            </div>
+            <div class="modal-body">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label" for="libro-titulo">Título *</label>
+                        <input type="text" class="form-input" id="libro-titulo" placeholder="Ej: El Quijote">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="libro-autor">Autor *</label>
+                        <input type="text" class="form-input" id="libro-autor" placeholder="Ej: Miguel de Cervantes">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label" for="libro-isbn">ISBN</label>
+                        <input type="text" class="form-input" id="libro-isbn" placeholder="Ej: 978-3-16-148410-0">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="libro-editorial">Editorial</label>
+                        <input type="text" class="form-input" id="libro-editorial" placeholder="Ej: Planeta">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label" for="libro-anio">Año</label>
+                        <input type="number" class="form-input" id="libro-anio" placeholder="Ej: 2023" min="1000" max="2099">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="libro-ejemplares">Cantidad de ejemplares *</label>
+                        <input type="number" class="form-input" id="libro-ejemplares" placeholder="Ej: 3" min="1" value="1">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="libro-categoria">Categoría</label>
+                    <div style="display:flex;gap:8px">
+                        <select class="form-input form-select" id="libro-categoria" style="flex:1">
+                            <option value="">Sin categoría</option>
+                        </select>
+                        <button type="button" class="btn btn-secondary" style="padding:0 16px" title="Nueva categoría" onclick="nuevaCategoria('libro-categoria')">+</button>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="cerrarModalLibro()">Cancelar</button>
+                <button class="btn btn-primary" id="btn-confirmar-libro">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+                    </svg>
+                    Agregar Libro
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── Modal Editar Libro ─────────────────────────────────── -->
+    <div class="modal-overlay" id="modal-editar-libro-overlay" onclick="if(event.target===this)cerrarModalEditarLibro()">
+        <div class="modal modal-success">
+            <div class="modal-header">
+                <div class="modal-header-icon" style="background:rgba(99,102,241,0.15);color:var(--accent-start);">
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                    </svg>
+                </div>
+                <div>
+                    <h3>Editar Libro</h3>
+                    <p>Modifica los datos y la cantidad de ejemplares</p>
+                </div>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="edit-libro-id">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label" for="edit-libro-titulo">Título *</label>
+                        <input type="text" class="form-input" id="edit-libro-titulo" placeholder="Ej: El Quijote">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="edit-libro-autor">Autor *</label>
+                        <input type="text" class="form-input" id="edit-libro-autor" placeholder="Ej: Miguel de Cervantes">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label" for="edit-libro-isbn">ISBN *</label>
+                        <input type="text" class="form-input" id="edit-libro-isbn" placeholder="Ej: 978-3-16-148410-0">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="edit-libro-editorial">Editorial</label>
+                        <input type="text" class="form-input" id="edit-libro-editorial" placeholder="Ej: Planeta">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label" for="edit-libro-anio">Año</label>
+                        <input type="number" class="form-input" id="edit-libro-anio" placeholder="Ej: 2023" min="1000" max="2099">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="edit-libro-ejemplares">Cantidad total de ejemplares *</label>
+                        <input type="number" class="form-input" id="edit-libro-ejemplares" placeholder="Ej: 5" min="0" value="1">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="edit-libro-categoria">Categoría</label>
+                    <div style="display:flex;gap:8px">
+                        <select class="form-input form-select" id="edit-libro-categoria" style="flex:1">
+                            <option value="">Sin categoría</option>
+                        </select>
+                        <button type="button" class="btn btn-secondary" style="padding:0 16px" title="Nueva categoría" onclick="nuevaCategoria('edit-libro-categoria')">+</button>
+                    </div>
+                </div>
+                <p id="edit-ejemplares-info" class="form-hint" style="margin-top:4px;color:var(--text-muted);font-size:0.82rem;"></p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="cerrarModalEditarLibro()">Cancelar</button>
+                <button class="btn btn-primary" id="btn-confirmar-editar-libro">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M20 6L9 17l-5-5"/>
+                    </svg>
+                    Guardar Cambios
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── Modal Eliminar Libro ───────────────────────────────── -->
+    <div class="modal-overlay" id="modal-eliminar-libro-overlay" onclick="if(event.target===this)cerrarModalEliminarLibro()">
+        <div class="modal modal-danger">
+            <div class="modal-header">
+                <div class="modal-header-icon" style="background:var(--danger-bg);color:var(--danger);">
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="3 6 5 6 21 6"/>
+                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                        <line x1="10" y1="11" x2="10" y2="17"/>
+                        <line x1="14" y1="11" x2="14" y2="17"/>
+                    </svg>
+                </div>
+                <div>
+                    <h3>Eliminar Libro</h3>
+                    <p>Esta acción no se puede deshacer</p>
+                </div>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="eliminar-libro-id">
+                <p style="color:var(--text-secondary);line-height:1.5;">
+                    ¿Seguro que deseas eliminar <strong id="eliminar-libro-titulo" style="color:var(--text-primary);"></strong> del catálogo?
+                    Se quitarán también sus ejemplares.
+                </p>
+                <p style="color:var(--text-muted);font-size:0.82rem;margin-top:8px;">
+                    No se podrá eliminar si el libro tiene préstamos activos, reservas pendientes o sanciones vigentes.
+                </p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="cerrarModalEliminarLibro()">Cancelar</button>
+                <button class="btn btn-danger" id="btn-confirmar-eliminar-libro">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="3 6 5 6 21 6"/>
+                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                    </svg>
+                    Eliminar
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/sidebar.js?v=20260613l"></script>
+    <script>renderSidebar('catalogo')</script>
+    <script src="js/api.js?v=20260613l"></script>
+    <script src="js/catalogo.js?v=20260613l"></script>
+</body>
+</html>
